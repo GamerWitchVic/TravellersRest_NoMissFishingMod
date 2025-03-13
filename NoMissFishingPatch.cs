@@ -1,51 +1,110 @@
-﻿using HarmonyLib;
+﻿using BepInEx;
+using HarmonyLib;
+using System;
+using System.Linq;
+using System.Reflection;
+using Mono.Cecil;
+using Mono.Cecil.Cil;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI; 
 
-[HarmonyPatch(typeof(FishingUI))]
-public static class NoMissFishingPatch
+[BepInPlugin("com.yourname.nomissfishing", "No Miss Fishing Mod", "1.1.0")]
+public class NoMissFishingMod : BaseUnityPlugin
 {
-    // Get a reference to the private "progress" field in FishingUI
-    private static readonly AccessTools.FieldRef<FishingUI, Slider> progressRef =
-        AccessTools.FieldRefAccess<FishingUI, Slider>("progress");
+    private Harmony harmony;
 
-    // Patch to prevent passive progress loss
-    [HarmonyPatch("HJBMAKFFJJN")]
-    [HarmonyPrefix]
-    public static bool PreventProgressLoss(FishingUI __instance)
+    void Awake()
     {
-        Slider progress = progressRef(__instance);
+        UnityEngine.Debug.Log("[NoMissFishing] Mod Loaded! Patching FishingUI for instant catches...");
+        harmony = new Harmony("com.yourname.nomissfishing");
 
-        if (progress != null)
+        // Patch progress-gaining methods to force 100% success
+        PatchFishingProgress();
+    }
+
+    /// <summary>
+    /// Hooks only the functions that modify progress and forces instant success.
+    /// </summary>
+    private void PatchFishingProgress()
+    {
+
+        var fishingMethods = typeof(FishingUI)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+            .Where(m => !m.IsConstructor && !m.IsAbstract && m.DeclaringType == typeof(FishingUI));
+
+        // find the correct fishing method
+        foreach (var method in fishingMethods)
         {
-            UnityEngine.Debug.Log("[NoMissFishing] Preventing passive progress loss.");
-            progress.value = Mathf.Max(progress.value, progress.value); // Keeps progress unchanged
+            var methodBody = method.GetMethodBody();
+            if (methodBody == null || methodBody.LocalVariables == null) continue;
+
+            if (method.IsAbstract || method.IsConstructor)
+                continue; // Skip abstract and constructors
+
+            if (MethodReferencesFields(method, "progress", "fishIcon", "box", "hitProgression", "hitReduction"))
+            {
+                UnityEngine.Debug.Log($"[NoMissFishing] 🎯 Patching Function: {method.Name}");
+                harmony.Patch(method, postfix: new HarmonyMethod(typeof(NoMissFishingMod), nameof(ForceMaxProgress)));
+
+            }
+        }
+
+    }
+
+    /// <summary>
+    /// Forces fishing progress to 100% immediately.
+    /// </summary>
+    static void ForceMaxProgress(FishingUI __instance)
+    {
+        Slider progressBar = Traverse.Create(__instance).Field("progress").GetValue<Slider>();
+        if (progressBar != null)
+        {
+            progressBar.value = 1.0f; // Instantly max out progress
+            UnityEngine.Debug.Log($"[NoMissFishing] 🎣 Forced Progress to 100%! Instant Catch Activated.");
         }
         else
         {
-            UnityEngine.Debug.LogError("[NoMissFishing] ERROR: Could not access 'progress' field!");
+            UnityEngine.Debug.LogError("[NoMissFishing] ❌ ERROR: Could not find progress bar!");
         }
-
-        return false; // Skip the original function
     }
 
-    // Patch to ensure progress always increases
-    [HarmonyPatch("FBBIFEBOBHF")]
-    [HarmonyPrefix]
-    public static bool EnsureProgressIncrease(FishingUI __instance)
+    /// <summary>
+    /// Ensures we only patch the correct method by checking references to key variables.
+    /// </summary>
+    private bool MethodReferencesFields(MethodInfo method, params string[] fieldNames)
     {
-        Slider progress = progressRef(__instance);
-
-        if (progress != null)
+        try
         {
-            UnityEngine.Debug.Log("[NoMissFishing] Ensuring fishing progress gain.");
-            progress.value += 0.5f; // Adjust this value if necessary
-        }
-        else
-        {
-            UnityEngine.Debug.LogError("[NoMissFishing] ERROR: Could not access 'progress' field!");
-        }
+            // Load the assembly and type definition
+            AssemblyDefinition assembly = AssemblyDefinition.ReadAssembly(method.Module.FullyQualifiedName);
+            var typeDef = assembly.MainModule.Types.FirstOrDefault(t => t.Name == method.DeclaringType.Name);
+            var methodDef = typeDef?.Methods.FirstOrDefault(m => m.Name == method.Name);
 
-        return false; // Skip the original function
+            if (methodDef == null || !methodDef.HasBody)
+            {
+                UnityEngine.Debug.LogError($"[NoMissFishing] ❌ ERROR extracting IL from {method.Name}: Method has no body.");
+                return false;
+            }
+
+            var instructions = methodDef.Body.Instructions;
+
+            // Get all referenced fields in the method
+            var referencedFields = new HashSet<string>(
+                instructions
+                    .Where(instr => instr.OpCode == OpCodes.Ldfld || instr.OpCode == OpCodes.Stfld) // Load/store field
+                    .Select(instr => (instr.Operand as FieldReference)?.Name)
+                    .Where(name => name != null) // Remove nulls
+            );
+
+            return fieldNames.All(field => referencedFields.Contains(field));
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogError($"[NoMissFishing] ❌ ERROR analyzing method {method.Name}: {ex.Message}");
+            return false;
+        }
     }
+
+
 }
