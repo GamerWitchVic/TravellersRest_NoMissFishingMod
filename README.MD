@@ -1,6 +1,7 @@
 # TravellersRest_NoMissFishingMod
 A Travellers Rest mod that makes fishing much easier! 
-- Once you've entered the fishing minigame, you'll never lose
+- Once you've entered the fishing minigame, you'll never lose. Simply click, and you'll catch the fish
+- This was primarily designed as an accessibility feature
 
 ## Backup your save before adding mods:
 Either use the "duplicate" feature on the load screen or make a copy of GameSaves in  `%userprofile%\appdata\locallow\Louqou\TravellersRest\`
